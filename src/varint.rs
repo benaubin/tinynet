@@ -52,9 +52,6 @@
 //! If the first byte is 0xFF, then the value bits of that byte can be ignored (masks to 0).
 //! simply read the next 8 bytes as a normal 64 bit integer.
 
-use bytes::Buf;
-use std::ops::Deref;
-
 #[inline(always)]
 fn ceil_div(n: u32, d: u32) -> u32 {
     (n + d - 1) / d
@@ -95,7 +92,8 @@ pub fn decode_varint(src: &[u8]) -> Option<u64> {
 }
 
 /// Read a varint from a buffer
-pub fn read_varint(src: &mut impl Buf) -> u64 {
+#[cfg(feature = "bytes")]
+pub fn read_varint(src: &mut impl bytes::Buf) -> u64 {
     let buf = src.chunk();
     let len = decode_varint_len(buf[0]);
     let val = decode_varint_unchecked(&buf[..len]);
@@ -103,50 +101,29 @@ pub fn read_varint(src: &mut impl Buf) -> u64 {
     return val;
 }
 
-/// An owned, encoded varint
-pub struct EncodedVarInt {
-    buf: [u8; 9],
-    /// the offset of the most significant byte in the buffer
-    msb: u8,
-}
-
-impl Deref for EncodedVarInt {
-    type Target = [u8];
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.buf[self.msb as usize..]
-    }
-}
-
 /// Encode a varint
-pub fn encode_varint(val: u64) -> EncodedVarInt {
-    let mut buf = [0; 9];
-    buf[1..].copy_from_slice(&val.to_be_bytes());
+pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
     let bitlen = u64::BITS - val.leading_zeros();
-    if bitlen > 56 {
-        buf[0] = 0xFF;
-        return EncodedVarInt { buf, msb: 0 };
+    let len = ceil_div(bitlen, 7);
+    match len {
+        0..=1 => {
+            buf[0] = val as u8;
+            1
+        }
+        2..=8 => {
+            let len_prefix = (0xFFu16 << (9 - len)) as u8; // cast from u16 because overflowing right-shift is undefined
+            let msb_mask = (0xFFu16 >> len) as u8;
+            let len = len as usize;
+            buf[..len].copy_from_slice(&val.to_be_bytes()[8 - len..]);
+            buf[0] = (buf[0] & msb_mask) | len_prefix;
+            len
+        },
+        9.. => {
+            buf[0] = 0xFF;
+            buf[1..].copy_from_slice(&val.to_be_bytes());
+            9
+        },
     }
-    if bitlen < 8 {
-        return EncodedVarInt { buf, msb: 8 };
-    }
-
-    let len = ceil_div(bitlen, 7); // result in [2, 8]
-    debug_assert!(matches!(len, 2..=8));
-
-    let b0_valmask = 0xFFu8 >> len.min(7);
-    let prefix_mask = !b0_valmask; // note that the zero bit is not included
-    let prefix_delim = !(1u8 << (8 - len));
-    debug_assert!(prefix_mask & prefix_delim != 0, "{val} {len} {b0_valmask}");
-
-    let msb = (9 - len) as usize;
-    buf[msb] = (buf[msb] | prefix_mask) & prefix_delim;
-
-    return EncodedVarInt {
-        buf,
-        msb: msb as u8,
-    };
 }
 
 #[cfg(test)]
@@ -170,15 +147,19 @@ mod test {
 
     #[test]
     pub fn encode_knowns() {
-        assert_eq!(&encode_varint(0)[..], [0]);
-        assert_eq!(&encode_varint(u64::MAX)[..], [0xFF; 9]);
+        let mut buf = [0; 9];
+        let len = encode_varint(0, &mut buf);
+        assert_eq!(&buf[..len], [0]);
+        let len = encode_varint(u64::MAX, &mut buf);
+        assert_eq!(&buf[..len], [0xFF; 9]);
     }
 
     fn test_roundtrip(val: u64) -> usize {
-        let encoded = encode_varint(val);
-        let decoded = read_varint(&mut &encoded[..]);
+        let mut buf = [0; 9];
+        let len = encode_varint(val, &mut buf);
+        let decoded = read_varint(&mut &buf[..len]);
         assert_eq!(val, decoded);
-        encoded.len()
+        len
     }
 
     #[test]

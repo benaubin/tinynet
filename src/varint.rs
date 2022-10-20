@@ -127,6 +127,14 @@ pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
     }
 }
 
+/// Read a varint from a [`bytes::Buf`], advancing the buffer
+#[cfg(feature = "bytes")]
+pub fn write_varint(val: u64, dest: &mut impl bytes::BufMut) {
+    let mut buf = [0; 9];
+    let size = encode_varint(val, &mut buf);
+    dest.put_slice(&buf[..size]);
+}
+
 // zigzag encoding is based on the following algorithm:
 // https://gist.github.com/mfuerstenau/ba870a29e16536fdbaba
 
@@ -157,6 +165,25 @@ mod test {
     pub fn read_knowns() {
         assert_eq!(read_varint(&mut &[0xFF; 9][..]), u64::MAX);
         assert_eq!(read_varint(&mut &[0b1000_0001, 0b1100_1000][..]), 456);
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    pub fn read_many() {
+        use bytes::{BytesMut, Buf};
+        
+        let mut nums: [u64; 10] = rand::random();
+        let mut buf = BytesMut::new();
+        for num in nums {
+            write_varint(num, &mut buf);
+        }
+        let mut buf = buf.freeze();
+        let mut decoded = vec![];
+        while buf.remaining() > 0 {
+            decoded.push(read_varint(&mut buf));
+        }
+        
+        assert_eq!(&nums, &decoded[..]);
     }
 
     #[test]

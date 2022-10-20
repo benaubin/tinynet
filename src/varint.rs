@@ -194,6 +194,16 @@ mod test {
     }
 
     #[test]
+    pub fn zigzag_encode_known() {
+        assert_eq!(0, zigzag_encode(0));
+        assert_eq!(1, zigzag_encode(-1));
+        assert_eq!(2, zigzag_encode(1));
+        assert_eq!(3, zigzag_encode(-2));
+        assert_eq!(100, zigzag_encode(50));
+        assert_eq!(99, zigzag_encode(-50));
+    }
+
+    #[test]
     pub fn zigzag_consts() {
         for val in [0, 1, i64::MAX, i64::MIN] {
             assert_eq!(val, zigzag_decode(zigzag_encode(val)));

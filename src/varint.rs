@@ -127,6 +127,19 @@ pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
     }
 }
 
+// zigzag encoding is based on the following algorithm:
+// https://gist.github.com/mfuerstenau/ba870a29e16536fdbaba
+
+/// Encode a signed integer with zigzag encoding (more compact than twos complement if negatives are common)
+pub fn zigzag_encode(val: i64) -> u64 {
+    ((val >> i64::BITS-1) ^ (val << 1)) as u64
+}
+
+/// Decode a signed integer with zigzag encoding (more compact than twos complement if negatives are common)
+pub fn zigzag_decode(val: u64) -> i64 {
+    ((val >> 1) as i64) ^ -(val as i64 & 1)
+}
+
 #[cfg(test)]
 mod test {
     use rand::Rng;
@@ -177,6 +190,23 @@ mod test {
         for _ in 0..100_000 {
             let val: u64 = rng.gen();
             test_roundtrip(val);
+        }
+    }
+
+    #[test]
+    pub fn zigzag_consts() {
+        for val in [0, 1, i64::MAX, i64::MIN] {
+            assert_eq!(val, zigzag_decode(zigzag_encode(val)));
+        }
+    }
+
+    #[test]
+    pub fn zigzag_roundtrips() {
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100_000 {
+            let val: i64 = rng.gen();
+            assert_eq!(val, zigzag_decode(zigzag_encode(val)));
         }
     }
 }

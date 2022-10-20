@@ -69,21 +69,15 @@ pub fn decode_varint_len(msb: u8) -> usize {
 /// However, undefined behavior is never possible.
 pub fn decode_varint_unchecked(src: &[u8]) -> u64 {
     let len = src.len();
+    if !matches!(len, 1..=9) {
+        unreachable!("decode_varint_unchecked called with invalid length");
+    }
     // mask for the most significant bits
-    let msb_mask = match len {
-        1..=7 => 0xFFu8 >> len,
-        8 => 0,
-        // special case for length 9, just read as a normal uint64
-        9 => return u64::from_be_bytes(src[1..].try_into().unwrap()),
-        // the length must have been already checked, so only [1, 9] is possible
-        _ => unreachable!("decode_varint_unchecked called with invalid length"),
-    };
-
     let mut buf = [0; 8];
     let offset = 8 - len;
     buf[offset..].copy_from_slice(src);
-    buf[offset] &= msb_mask;
-    return u64::from_be_bytes(buf);
+    buf[offset] &= (0xFFu16 >> len) as u8;
+    return u64::from_be_bytes(buf[1..].try_into().unwrap());
 }
 
 /// Decode a varint, returns None if src does not have enough characters.

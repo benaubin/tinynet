@@ -68,33 +68,37 @@ pub fn decode_varint_len(msb: u8) -> usize {
 
 /// Decode a varint of known length
 ///
-/// Length of src must be correct (call [`decode_varint_len`] first!)
-fn decode_varint_raw(src: &[u8]) -> u64 {
+/// Length of src must be correct (call [`decode_varint_len`] first!), or you may get incorrect results or panic
+pub fn decode_varint_unchecked(src: &[u8]) -> u64 {
     let len = src.len();
-    match len {
-        1..=8 => { /* ok */ }
+    // mask for the most significant bits
+    let msb_mask = match len {
+        1..=7 => 0xFFu8 >> len,
+        8 => 0,
+        // special case for length 9, just read as a normal uint64
         9 => return u64::from_be_bytes(src[1..].try_into().unwrap()),
-        _ => unreachable!("decode_varint_raw called with invalid length"),
+        // the length must have been already checked, so only [1, 9] is possible
+        _ => unreachable!("decode_varint_unchecked called with invalid length"),
     };
 
     let mut buf = [0; 8];
     let offset = 8 - len;
     buf[offset..].copy_from_slice(src);
-    buf[offset] &= 0xFFu8 >> len.min(7);
+    buf[offset] &= msb_mask;
     return u64::from_be_bytes(buf);
 }
 
 /// Decode a varint, returns None if src does not have enough characters.
 pub fn decode_varint(src: &[u8]) -> Option<u64> {
     let len = decode_varint_len(*src.get(0)?);
-    Some(decode_varint_raw(src.get(0..len)?))
+    Some(decode_varint_unchecked(src.get(0..len)?))
 }
 
 /// Read a varint from a buffer
 pub fn read_varint(src: &mut impl Buf) -> u64 {
     let buf = src.chunk();
     let len = decode_varint_len(buf[0]);
-    let val = decode_varint_raw(&buf[..len]);
+    let val = decode_varint_unchecked(&buf[..len]);
     src.advance(len);
     return val;
 }

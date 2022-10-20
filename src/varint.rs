@@ -63,9 +63,10 @@ pub fn decode_varint_len(msb: u8) -> usize {
     return msb.leading_ones() as usize + 1;
 }
 
-/// Decode a varint of known length
-///
-/// Length of src must be correct (call [`decode_varint_len`] first!), or you may get incorrect results or panic
+/// Decode a varint of known length. You should probably use [`read_varint`] or [`decode_varint`] instead.
+/// 
+/// `src.len()` be correctly set (use [`decode_varint_len`]) or this function may return incorrect results or panic.
+/// However, undefined behavior is never possible.
 pub fn decode_varint_unchecked(src: &[u8]) -> u64 {
     let len = src.len();
     // mask for the most significant bits
@@ -91,7 +92,7 @@ pub fn decode_varint(src: &[u8]) -> Option<u64> {
     Some(decode_varint_unchecked(src.get(0..len)?))
 }
 
-/// Read a varint from a buffer
+/// Read a varint from a [`bytes::Buf`], advancing the buffer
 #[cfg(feature = "bytes")]
 pub fn read_varint(src: &mut impl bytes::Buf) -> u64 {
     let buf = src.chunk();
@@ -101,7 +102,7 @@ pub fn read_varint(src: &mut impl bytes::Buf) -> u64 {
     return val;
 }
 
-/// Encode a varint
+/// Encode a varint, returns size of the varint
 pub fn encode_varint(val: u64, buf: &mut [u8]) -> usize {
     let bitlen = u64::BITS - val.leading_zeros();
     let len = ceil_div(bitlen, 7);

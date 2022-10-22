@@ -114,6 +114,18 @@ impl<T> SharedSlots<T> {
         };
         Some(Occupied(slot))
     }
+
+    pub fn take(&self, key: usize) -> Option<T> {
+        let slot = self.lock_slot(key)?;
+        if let Slot::Vacant { .. } = &*slot.slot {
+            return None;
+        };
+        Some(Occupied(slot).take().0)
+    }
+
+    pub fn insert(&self, item: T) -> Option<usize> {
+        Some(self.reserve()?.insert(item).key())
+    }
 }
 
 #[cfg(test)]
@@ -124,7 +136,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn take() {
+    fn insert_and_take() {
+        let slots = SharedSlots::<i32>::new(5);
+        slots.insert(1);
+        slots.insert(2);
+        slots.insert(3);
+        slots.insert(4);
+        slots.insert(5);
+        assert_eq!(slots.take(3), Some(4));
+        assert_eq!(slots.get(4).as_deref(), Some(&5));
+        assert_eq!(slots.insert(10), Some(3));
+        assert_eq!(slots.get(3).as_deref(), Some(&10));
+    }
+
+    #[test]
+    fn get_and_take() {
         let slots = SharedSlots::<i32>::new(2);
         let slot1 = slots.reserve().unwrap();
         let slot2 = slots.reserve().unwrap();

@@ -15,14 +15,14 @@ pub struct SharedSlots<T> {
 struct SlotRef<'a, T> {
     slots: &'a SharedSlots<T>,
     slot: MutexGuard<'a, Slot<T>>,
-    idx: usize,
+    key: usize,
 }
 
 impl<T> Drop for SlotRef<'_, T> {
     fn drop(&mut self) {
         match &mut *self.slot {
             Slot::Vacant { next } => {
-                *next = self.slots.next_free.swap(self.idx, Ordering::Relaxed);
+                *next = self.slots.next_free.swap(self.key, Ordering::Relaxed);
             },
             _ => {}
         };
@@ -33,7 +33,7 @@ pub struct Reserved<'a, T>(SlotRef<'a, T>);
 
 impl<'a, T> Reserved<'a, T> {
     pub fn key(&self) -> usize {
-        self.0.idx
+        self.0.key
     }
     pub fn insert(mut self, item: T) -> Occupied<'a, T> {
         *self.0.slot = Slot::Occupied(item);
@@ -45,7 +45,7 @@ pub struct Occupied<'a, T>(SlotRef<'a, T>);
 
 impl<'a, T> Occupied<'a, T> {
     pub fn key(&self) -> usize {
-        self.0.idx
+        self.0.key
     }
     pub fn take(self) -> (T, Reserved<'a, T>) {
         let mut inner = self.0;
@@ -89,15 +89,15 @@ impl<T> SharedSlots<T> {
         }
     }
 
-    fn get_slot(&self, idx: usize) -> Option<SlotRef<'_, T>> {
-        let slot = self.slots.get(idx)?.lock();
-        Some(SlotRef { slots: self, slot, idx })
+    fn lock_slot(&self, key: usize) -> Option<SlotRef<'_, T>> {
+        let slot = self.slots.get(key)?.lock();
+        Some(SlotRef { slots: self, slot, key })
     }
 
     pub fn reserve(&self) -> Option<Reserved<'_, T>> {
         loop {
-            let idx = self.next_free.load(Ordering::Relaxed);
-            let slot = self.get_slot(idx)?;
+            let key = self.next_free.load(Ordering::Relaxed);
+            let slot = self.lock_slot(key)?;
             let next_free = match &*slot.slot {
                 Slot::Vacant { next } => *next,
                 _ => continue,
@@ -108,7 +108,7 @@ impl<T> SharedSlots<T> {
     }
 
     pub fn get(&self, key: usize) -> Option<Occupied<'_, T>> {
-        let slot = self.get_slot(key)?;
+        let slot = self.lock_slot(key)?;
         if let Slot::Vacant { .. } = &*slot.slot {
             return None;
         };

@@ -1,4 +1,7 @@
-use std::{sync::atomic::{AtomicUsize, Ordering}, ops::{Deref, DerefMut}};
+use std::{
+    ops::{Deref, DerefMut},
+    mem,
+};
 
 use parking_lot::{Mutex, MutexGuard};
 
@@ -9,7 +12,7 @@ enum Slot<T> {
 
 pub struct SharedSlots<T> {
     slots: Vec<Mutex<Slot<T>>>,
-    next_free: AtomicUsize,
+    next_free: Mutex<usize>,
 }
 
 struct SlotRef<'a, T> {
@@ -20,10 +23,11 @@ struct SlotRef<'a, T> {
 
 impl<T> Drop for SlotRef<'_, T> {
     fn drop(&mut self) {
+        let mut next_free = MutexGuard::unlocked(&mut self.slot, || self.slots.next_free.lock());
         match &mut *self.slot {
             Slot::Vacant { next } => {
-                *next = self.slots.next_free.swap(self.key, Ordering::Relaxed);
-            },
+                *next = mem::replace(&mut *next_free, self.key);
+            }
             _ => {}
         };
     }
@@ -51,7 +55,7 @@ impl<'a, T> Occupied<'a, T> {
         let mut inner = self.0;
         let item = match std::mem::replace(&mut *inner.slot, Slot::Vacant { next: usize::MAX }) {
             Slot::Occupied(item) => item,
-            _ => unreachable!()
+            _ => unreachable!(),
         };
         (item, Reserved(inner))
     }
@@ -63,7 +67,7 @@ impl<T> Deref for Occupied<'_, T> {
     fn deref(&self) -> &Self::Target {
         match &*self.0.slot {
             Slot::Occupied(item) => item,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 }
@@ -72,39 +76,51 @@ impl<T> DerefMut for Occupied<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match &mut *self.0.slot {
             Slot::Occupied(item) => item,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 }
 
 impl<T> SharedSlots<T> {
     pub fn new(capacity: usize) -> Self {
-        let slots = std::iter::repeat(()).enumerate().map(|(i,_)| {
-            Mutex::new(Slot::Vacant { next: i + 1 })
-        }).take(capacity).collect();
+        let slots = std::iter::repeat(())
+            .enumerate()
+            .map(|(i, _)| Mutex::new(Slot::Vacant { next: i + 1 }))
+            .take(capacity)
+            .collect();
 
         Self {
             slots,
-            next_free: AtomicUsize::new(0)
+            next_free: Mutex::new(0),
         }
     }
 
     fn lock_slot(&self, key: usize) -> Option<SlotRef<'_, T>> {
         let slot = self.slots.get(key)?.lock();
-        Some(SlotRef { slots: self, slot, key })
+        Some(SlotRef {
+            slots: self,
+            slot,
+            key,
+        })
     }
 
     pub fn reserve(&self) -> Option<Reserved<'_, T>> {
-        loop {
-            let key = self.next_free.load(Ordering::Relaxed);
-            let slot = self.lock_slot(key)?;
-            let next_free = match &*slot.slot {
-                Slot::Vacant { next } => *next,
-                _ => continue,
-            };
-            self.next_free.store(next_free, Ordering::Relaxed);
-            return Some(Reserved( slot ));
-        }
+        let mut next_free = self.next_free.lock();
+        let key = *next_free;
+        let slot = self
+            .slots
+            .get(key)?
+            .lock();
+        let slot = SlotRef {
+            slots: self,
+            slot,
+            key,
+        };
+        *next_free = match &*slot.slot {
+            Slot::Vacant { next } => *next,
+            _ => unreachable!(),
+        };
+        return Some(Reserved(slot));
     }
 
     pub fn get(&self, key: usize) -> Option<Occupied<'_, T>> {
@@ -130,8 +146,8 @@ impl<T> SharedSlots<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use rand::Rng;
+    use std::collections::HashSet;
 
     use super::*;
 
@@ -180,14 +196,14 @@ mod tests {
             slots.reserve().unwrap().insert(i);
         }
         assert!(slots.reserve().is_none());
-        
+
         for i in 0..5 {
             assert_eq!(*slots.get(i as usize).unwrap(), i)
         }
     }
     #[test]
     fn threaded() {
-        let slots = SharedSlots::<i32>::new (100);
+        let slots = SharedSlots::<i32>::new(100);
         let mut values = vec![0i32; 100];
         rand::thread_rng().fill(&mut values[..]);
         let values = HashSet::from_iter(values.into_iter());
@@ -200,12 +216,108 @@ mod tests {
                 });
             }
         });
-        
+
         let mut stored = HashSet::new();
         for i in 0..values.len() {
             stored.insert(*slots.get(i as usize).unwrap());
         }
-        assert_eq!( values, stored );
+        assert_eq!(values, stored);
+    }
 
+    #[test]
+    fn no_deadlock() {
+        let slots = SharedSlots::<i32>::new(1);
+        let result = std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let mut successes = 0;
+                for i in 0..100000 {
+                    if slots.reserve().is_some() {
+                        successes += 1;
+                    }
+                }
+                successes
+            });
+            let b = s.spawn(|| {
+                let mut successes = 0;
+                for i in 0..100000 {
+                    if slots.reserve().is_some() {
+                        successes += 1;
+                    }
+                }
+                successes
+            });
+            a.join().unwrap() + b.join().unwrap()
+        });
+    }
+
+    #[test]
+    fn no_intefere() {
+        let slots = SharedSlots::<i32>::new(2);
+        let result = std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let mut successes = 0;
+                for i in 0..100000 {
+                    if slots.reserve().is_some() {
+                        successes += 1;
+                    }
+                }
+                successes
+            });
+            let b = s.spawn(|| {
+                let mut successes = 0;
+                for i in 0..100000 {
+                    if slots.reserve().is_some() {
+                        successes += 1;
+                    }
+                }
+                successes
+            });
+            a.join().unwrap() + b.join().unwrap()
+        });
+        assert_eq!(result, 200000);
+    }
+    #[test]
+    fn no_deadlock4() {
+        let slots = SharedSlots::<i32>::new(2);
+        let result = std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let mut successes = 0;
+                for i in 0..100000 {
+                    if slots.reserve().is_some() {
+                        successes += 1;
+                    }
+                }
+                successes
+            });
+            let b = s.spawn(|| {
+                let mut successes = 0;
+                for i in 0..100000 {
+                    if slots.reserve().is_some() {
+                        successes += 1;
+                    }
+                }
+                successes
+            });
+            let c = s.spawn(|| {
+                let mut successes = 0;
+                for i in 0..100000 {
+                    if slots.reserve().is_some() {
+                        successes += 1;
+                    }
+                }
+                successes
+            });
+            let d = s.spawn(|| {
+                let mut successes = 0;
+                for i in 0..100000 {
+                    if slots.reserve().is_some() {
+                        successes += 1;
+                    }
+                }
+                successes
+            });
+            a.join().unwrap() + b.join().unwrap() + c.join().unwrap() + d.join().unwrap()
+        });
+        assert!( result >= 100000 )
     }
 }
